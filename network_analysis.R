@@ -108,7 +108,17 @@ network_data_merged <- left_join(communities_membership, characteristics_idalter
 arguments <- expand_grid(characteristic = characteristics, algorithm = community_algorithms)
 network_summary <- pmap_df(arguments, summarize_by_algorithm, data = network_data_merged, threshold = 1, group = c("variable", "school", "cohort", "time"))
 
-## PLOTS
+## STORING DATA
+
+write_csv(summary_id %>% select_if(negate(is.list)), path = "summary_id.csv")
+write_csv(network_summary %>% select_if(negate(is.list)), path = "network_summary.csv")
+write_csv(characteristics_school, path = "characteristics_school.csv")
+write_csv(characteristics_idalter, path = "characteristics_idalter.csv")
+write_csv(network_data_merged, path = "network_data_merged_lima_any.csv")
+
+save.image(file='social_networks.RData')
+
+  ## PLOTS
 # Only as an example
 # WARNING: Implementation of automatized process is pending
 

@@ -8,7 +8,7 @@ setwd("Documents/BRIQ/Roman/Data Analysis/") # Set working directory
 source("socialnetworks_packages.R") # Load packages
 source("socialnetworks_functions.R") # Load functions
 #plan(multiprocess) # Enable multiprocessing 
-
+    
 ## Start
 
 ## Load data, Summary Statistics & Database check

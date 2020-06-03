@@ -596,3 +596,34 @@ load_datasrc <- function(src_name, main = FALSE) {
     source(src_name) } else if (loaded_data != TRUE) {
       source(src_name) }
 }
+
+#### UGLY FUNCTIONS
+
+function_one <- function(a,b) {
+  data2database <- mutate(a, wdistance = map2(a$wdistance, a$adjacency_matrix, ~function_two(.x, .y, b))) %>% 
+    dplyr::select(-adjacency_matrix) %>% unnest(cols = wdistance) %>% 
+    rename_at(vars(matches("contiguo")), ~paste0("w", .x)) %>%
+    mutate_if(is.factor, as.character) %>%
+    right_join(rlang::eval_tidy(id_cases), by = c("school", "cohort", "idego", "idalter")) %>%
+    mutate(network = paste(school, cohort, sep = "_"),
+           network_id = as.integer(factor(network, levels = unique(network))))
+  dbWriteTable(conn = database_connection, name = b, value = data2database, overwrite = TRUE, temporary = FALSE)
+  link <- tbl(database, b)
+  return(link)
+}
+
+function_two <- function(x,y,b, groups = c("idego", "idalter")) {
+  pipe_matrix2tibble(y, name = b) %>% right_join(x, by = groups)
+}
+
+multiple_reformulate <- function(formulas, response) {
+  formulas %<>% as_tibble_col(column_name = "model_formula") %>% 
+    mutate(model_formula = map(model_formula, ~reformulate(.x, response = response)),
+           model_type = 1:n())
+}
+
+sink_latex_output <- function(object, column = "model", filename, append = TRUE, ...) {
+  sink(filename, append = append, ...)
+  object %>% `[[` (column) %>% stargazer()
+  closeAllConnections()
+}

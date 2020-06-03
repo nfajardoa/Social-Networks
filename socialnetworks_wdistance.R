@@ -65,4 +65,22 @@ adjacency_matrices %<>% filter(nodes_n != 0) %>%
                           reduce(full_join, by = c("idego", "idalter"))))
 
 rm(list = c("distance_matrices", "distance_summary"))
-save(adjacency_matrices, file = paste0("weighted_distance_", Sys.Date(), ".RData"))
+save(adjacency_matrices, file = paste0("adjacency_matrices_", Sys.Date(), ".RData"))
+
+## Load Database
+database <- src_postgres(dbname = "socialnetworks", user = "test", password = "perras", host = "localhost", port = "5432")
+database_connection <- dbConnect(RPostgres::Postgres(), dbname = 'socialnetworks', host = 'localhost', port = 5432, user = 'test', password = 'perras')
+
+## Weighted distance
+distance_names <- names(data) %>% str_subset("contiguo") %>% paste(collapse = " + ")
+id_cases <- quo(data %>% dplyr::select(coar, cohort, idego, idalter, matches("contiguo")) %>% rename(school = coar) %>% mutate_if(is.factor,as.character))
+weighted_distance <- adjacency_matrices %>% 
+  dplyr::select(variable, selector, school, cohort, time, adjacency_matrix, distance) %>%
+  rename(wdistance = distance) %>% group_by(variable, selector, time) %>% 
+  group_nest() %>% mutate(
+    name = paste(variable, time, selector, sep = "_") %>% str_replace("_none", ""),
+    data = map2(data, name, function_one))
+
+rm(list = c("adjacency_matrices"))
+save(weighted_distance, file = paste0("weighted_distance_", Sys.Date(), ".RData"))
+dbDisconnect(database_connection)

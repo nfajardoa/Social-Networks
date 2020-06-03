@@ -5,71 +5,36 @@
 ########################### Comments:
 ########################### 
 
-## Check if data is loaded, if not, load it.
-load_datasrc("socialnetworks_summstats.R", main = TRUE)
-load_lastdataset("weighted_distance")
-
-## Load Databases
+## Load Database
 database <- src_postgres(dbname = "socialnetworks", user = "test", password = "perras", host = "localhost", port = "5432")
 database_connection <- dbConnect(RPostgres::Postgres(), dbname = 'socialnetworks', host = 'localhost', port = 5432, user = 'test', password = 'perras')
 
-db_create_table
-
-## Weighted distance
+## Check if data is loaded, if not, load it.
+load_datasrc("socialnetworks_summstats.R", main = TRUE)
+#load_lastdataset("weighted_distance")
+load("weighted_distance_2020-05-27.RData")
+wdistance_names <- names(data) %>% str_subset("contiguo") %>% paste0("w", .) %>% paste(collapse = " + ")
 distance_names <- names(data) %>% str_subset("contiguo") %>% paste(collapse = " + ")
-id_cases <- data %>% dplyr::select(coar, cohort, idego, idalter, matches("contiguo")) %>% rename(school = coar)
+regression_formulas <- list(paste0(wdistance_names, " | idego + idalter +  | 0 | network_id"),
+                 paste0(wdistance_names, " + ", distance_names, " | idego + idalter +  | 0 | network_id"))
 
-weighted_distance <- adjacency_matrices %>%
-  dplyr::select(variable, selector, school, cohort, time, adjacency_matrix, distance) %>%
-  rename(wdistance = distance) 
+## Renew Connections & Run Models
+weighted_distance_models <- weighted_distance %>% mutate(data = map(name, tbl, src = database)) %>% #Renew Connections
+  mutate(models = map(name, ~ multiple_reformulate(regression_formulas, response = .x))) %>%
+  unnest(models) %>% mutate(model = map2(model_formula, data, ~ felm(formula = .x, data = collect(.y), cmethod = "reghdfe")))
+save(weighted_distance_models, file = paste0("weighted_distance_models_", Sys.Date(), ".RData"))
 
-rm(adjacency_matrices)
+## Print models
+weighted_distance_models %>% group_by(variable, selector) %>% 
+  group_split() %>% walk(sink_latex_output, filename = "weighted_distance_regressions_output.txt")
 
-test <- weighted_distance %>% head(4) %>% group_by(variable, selector, time) %>% 
-  group_nest() 
+##### Normal distance
 
+test_data <- read_csv("regressions_data_2020-05-04.csv", na = ".") 
+test_data$idalter %<>% as.character
+test_data$idego %<>% as.character
 
-weighted_distance %<>%
-  mutate(
-    name = paste(variable, selector, time, sep = "_") %>% str_replace("_none", ""),
-    wdistance = map(wdistance, ~ rename_at(.x, vars(matches("contiguo")), ~paste0("w", .x))),
-    wdistance = map2(wdistance, school, ~ add_column(.x, school = .y)),
-    wdistance = map2(wdistance, cohort, ~ add_column(.x, cohort = .y)),
-    network_tibble = map2(adjacency_matrix, name, pipe_matrix2tibble),
-    network_tibble = pmap(list(school, cohort, network_tibble, name), 
-                          ~dplyr::filter(id_cases, school == ..1, cohort == ..2) %>% 
-                            left_join(..3, by = c("idego", "idalter"))))
-
-weighted_distance %<>%
-  dplyr::select(name, wdistance, network_tibble) %>%
-  group_by(name) %>%
-  group_nest() %>%
-  mutate(data = map(data, ~mutate(.x, network_tibble = map2(wdistance, network_tibble, right_join, by = c("school", "cohort", "idego", "idalter")))),
-         data = map(data, ~dplyr::select(.x, -wdistance) %>% rename(regression_data = network_tibble)),
-         data = map2(data, name, ~ .x %>% unlist(recursive = FALSE) %>% reduce(bind_rows)),
-         data = map(data, mutate, network = paste(school, cohort, sep = "_"),
-                    network_id = as.numeric(factor(network, levels = unique(network)))))
-
-  any_coll_db <- tbl(database_connection, "any_coll") %>% collect()
-
-models <- weighted_distance %>% mutate(
-  model_formula = map(name, ~ reformulate(paste0(distance_names, " | idego + idalter | 0 | network_id"), response = .x)),
-  model = map2(model_formula, data, ~ felm(.x, .y, cmethod = "reghdfe")),
-  model_coefficients = map(model, tidy),
-  model_statistics = map(model, glance)
-)
-
-stargazer(models$model)
-
-save.image(file = paste0("weighted_distance_regressions_", Sys.Date(), ".RData"))
-
-## Normal distance
-
-data <- read_csv("regressions_data_2020-05-04.csv", na = ".") 
-data$idalter %<>% as.character
-data$idego %<>% as.character
-
-est <- felm(coincs_frdly_base ~ 1 + ingroup + factor(s_sex) | idego + idalter | 0 | network_id, data=data, cmethod ='reghdfe')
+est <- felm(coincs_frdly_base ~ 1 + ingroup + factor(s_sex) | idego + idalter | 0 | network_id, data=test_data, cmethod ='reghdfe')
 est_2 <- felm(coincs_frdly_end ~ 1 + ingroup + factor(s_sex) | idego + idalter | 0 | network_id, data=data, cmethod ='reghdfe')
 
 est_a <- felm(coincs_frdly_end ~ ingroup + factor(s_sex) + s_sex*male_idego | idego + idalter | 0 | network_id, data=data, cmethod ='reghdfe')

@@ -1,7 +1,17 @@
+########################### NETWORKS AND COMMUNITY IDENTIFICATION ###########################
+########################### Plots and histrograms from communities data
+########################### Written by: Nicolas Fajardo
+########################### Last modified: 26/06/2020
+
 characteristics_summary <- characteristics_idalter %>% pivot_longer(cols = contains(characteristics), names_to = "characteristic", values_to = "nominations") %>%
   group_by(characteristic, add = TRUE) %>% summarize(q3 = quantile(nominations, probs = 0.75))
 
-network_data_summary_by_community <- network_data_merged %>% 
+load_lastdataset()
+
+load("communities/communities_2020-06-26.RData")
+
+
+network_data_summary_by_community <- communities_membership %>% 
   pivot_longer(cols = all_of(community_algorithms), names_to = "community_algorithm", values_to = "community") %>%
   group_by(time, charc_time, community_algorithm, community, add = TRUE) %>%
   pivot_longer(cols = contains(characteristics), names_to = "characteristic", values_to = "nominations") %>%

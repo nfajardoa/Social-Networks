@@ -3,101 +3,191 @@
 ########################### Written by: Nicolas Fajardo
 ########################### Last modified: 23/05/2020
 ########################### Comments:
-########################### 
-
-## Load Database
-database <- src_postgres(dbname = "socialnetworks", user = "test", password = "perras", host = "localhost", port = "5432")
-database_connection <- dbConnect(RPostgres::Postgres(), dbname = 'socialnetworks', host = 'localhost', port = 5432, user = 'test', password = 'perras')
+###########################
 
 ## Check if data is loaded, if not, load it.
-load_datasrc("socialnetworks_summstats.R", main = TRUE)
-#load_lastdataset("weighted_distance")
-load("weighted_distance_2020-05-27.RData")
-wdistance_names <- names(data) %>% str_subset("contiguo") %>% paste0("w", .) %>% paste(collapse = " + ")
-distance_names <- names(data) %>% str_subset("contiguo") %>% paste(collapse = " + ")
-regression_formulas <- list(paste0(wdistance_names, " | idego + idalter +  | 0 | network_id"),
-                 paste0(wdistance_names, " + ", distance_names, " | idego + idalter +  | 0 | network_id"))
+load_datasrc("socialnetworks_summstats.R")
+load_lastdataset("weighted_distance", module = "wdistance")
+load_lastdataset("s_communities_membership", module = "communities")
 
-## Renew Connections & Run Models
-weighted_distance_models <- weighted_distance %>% mutate(data = map(name, tbl, src = database)) %>% #Renew Connections
-  mutate(models = map(name, ~ multiple_reformulate(regression_formulas, response = .x))) %>%
-  unnest(models) %>% mutate(model = map2(model_formula, data, ~ felm(formula = .x, data = collect(.y), cmethod = "reghdfe")))
+## Create file
+if (dir.exists("regressions/")) {
+  setwd("regressions/")
+} else {
+  dir.create("regressions/")
+  setwd("regressions/")
+}
+
+## Set parameters
+keep_covariates <- c("male") # Which covariates will be regressed (All regressions)
+
+## Generate variables for regressions
+merged_data <- data %>%
+  left_join(covariates_data %>%
+    dplyr::select(coar, cohort, id, !!!syms(keep_covariates)) %>%
+    rename(idego = id), by = c("coar", "cohort", "idego")) %>%
+  left_join(covariates_data %>%
+    dplyr::select(coar, cohort, id, !!!syms(keep_covariates)) %>%
+    rename(idalter = id), by = c("coar", "cohort", "idalter"), suffix = c(".idego", ".idalter")) %>%
+  mutate(
+    idego = as.character(idego),
+    idalter = as.character(idalter),
+    s_sex = if_else(male.idego == male.idalter, 1, 0),
+    s_sex = factor(s_sex, levels = 0:1, labels = c("diff", "same")),
+    i_sex = case_when(
+      male.idego == 0 & male.idalter == 0 ~ 1,
+      male.idego == 1 & male.idalter == 1 ~ 2,
+      male.idego == 0 & male.idalter == 1 ~ 0,
+      male.idego == 1 & male.idalter == 0 ~ 0
+    ),
+    i_sex = factor(i_sex, levels = 0:2, labels = c("other", "both girls", "both boys")),
+    network = paste(coar, cohort, sep = "_"),
+    network_id = as.integer(factor(network, levels = unique(network)))
+  ) %>%
+  left_join(coincidences_data, by = c("coar", "cohort", "idego", "idalter")) %>%
+  mutate_at(vars(matches("coincidences")), replace_na, 0) %>%
+  filter(idego != idalter) # Delete same idego and same idalter observations
+
+if (save_csv == TRUE) {
+  merged_data %>%
+    mutate_all(as.character) %>%
+    mutate_all(replace_na, replace = ".") %>%
+    write_csv(path = paste0("regressions_data_", Sys.Date(), ".csv"))
+}
+
+if (use_db == TRUE) { ## Load Database
+  database <- src_postgres(dbname = "socialnetworks", user = "test", password = "12345", host = "localhost", port = "5432")
+  database_connection <- dbConnect(RPostgres::Postgres(), dbname = "socialnetworks", host = "localhost", port = 5432, user = "test", password = "12345")
+  weighted_distance %<>% mutate(data = map(name, tbl, src = database)) ## Renew connections
+}
+
+## Extract Variable names
+wdistance_names <- names(data) %>%
+  str_subset("contiguo") %>%
+  paste0("w", .) %>%
+  paste(collapse = " + ")
+distance_names <- names(data) %>%
+  str_subset("contiguo") %>%
+  paste(collapse = " + ")
+
+#### Network ~ (Weighted) Distance Models
+## Clustering: network_id
+## Calculated factors: s_sex or i_sex
+## Absorbed factors (fixed effects): idego + idalter
+# Comments: By design, the element weighted_distance only contains the
+# identification variables [idvars] (coar, cohort, idego, idalter), and the w- and distance
+# variables, in order to add other variables to the regressions is necessary to create
+# a dataframe which will be joined before the regression is executed (must have the idvars).
+# The aforementioned join, preserves only the observations in the added data, while joining 
+# both data frames columns (see right_join, where add_data is the right tibble).
+
+add_data <- merged_data %>%
+  dplyr::select(coar, cohort, idego, idalter, i_sex)
+
+# List of formulas of desired models (see felm)
+weighted_distance_formulas <- list(
+  paste0(distance_names, "| idego + idalter + factor(i_sex) | 0 | network_id"),
+  paste0(wdistance_names, "| idego + idalter + factor(i_sex) | 0 | network_id"),
+  paste0(wdistance_names, " + ", distance_names, "| idego + idalter + factor(i_sex) | 0 | network_id")
+)
+
+# Run regressions
+weighted_distance_models <-
+  regress_network(
+    weighted_distance,
+    weighted_distance_formulas,
+    response_col = "name",
+    nested_data = "data",
+    add_data = add_data,
+    baseline_data = merged_data,
+    control_baseline = TRUE,
+    cmethod = "reghdfe"
+  )
+
+# Reshape and print LaTeX tables of estimated models
+weighted_distance_models %<>%
+  unnest(models) %>%
+  group_by(variable, selector) %>%
+  group_split() %>%
+  walk(sink_latex_output, filename = "weighted_distance_regressions.txt") %>%
+  reduce(bind_rows)
+
+# Save models object on file
 save(weighted_distance_models, file = paste0("weighted_distance_models_", Sys.Date(), ".RData"))
 
-## Print models
-weighted_distance_models %>% group_by(variable, selector) %>% 
-  group_split() %>% walk(sink_latex_output, filename = "weighted_distance_regressions_output.txt")
+if (save_memory == TRUE) {
+  rm(weighted_distance_models)
+}
 
-##### Normal distance
+#### Coincidences ~ Distance Models
+# Clustering: network_id
+# Calculated factors: none
+# Absorbed factors (fixed effects): idego + idalter + factor(i_sex)
 
-test_data <- read_csv("regressions_data_2020-05-04.csv", na = ".") 
-test_data$idalter %<>% as.character
-test_data$idego %<>% as.character
+coincidences_distance_formula <- list(
+  paste0(distance_names, "| idego + idalter + factor(i_sex) | 0 | network_id"),
+  "ingroup | idego + idalter  + factor(i_sex) | 0 | network_id"
+)
 
-est <- felm(coincs_frdly_base ~ 1 + ingroup + factor(s_sex) | idego + idalter | 0 | network_id, data=test_data, cmethod ='reghdfe')
-est_2 <- felm(coincs_frdly_end ~ 1 + ingroup + factor(s_sex) | idego + idalter | 0 | network_id, data=data, cmethod ='reghdfe')
+# Run regressions
+coincidences_distance_models <-
+  regress_network(
+    expand_grid(characteristic = characteristics, time = characteristics_t) %>%
+      mutate(variable = paste("coincidences", characteristic, time, sep = "_")),
+    coincidences_distance_formula,
+    response = "variable",
+    use_data = merged_data,
+    control_baseline = TRUE,
+    cmethod = "reghdfe"
+  )
 
-est_a <- felm(coincs_frdly_end ~ ingroup + factor(s_sex) + s_sex*male_idego | idego + idalter | 0 | network_id, data=data, cmethod ='reghdfe')
+# Save models object on file
+save(coincidences_distance_models, file = paste0("coincidences_distance_models_", Sys.Date(), ".RData"))
 
-coincidences_names <- names(data) %>% str_subset("coincs")
-contiguo_names <- names(data) %>% str_subset("contiguo") %>% paste(collapse = " + ")
-variables <- c(contiguo_names, "ingroup")
+# Print models
+coincidences_distance_models %>%
+  group_by(characteristic) %>%
+  group_split() %>%
+  walk(sink_latex_output, filename = "coincidences_distance_regressions.txt")
 
-models <- expand_grid(response = coincidences_names, variables) %>% 
-  mutate(variables = map(variables, paste0, values = " + factor(s_sex) | idego + idalter | 0 | network_id"),
-         formula = map2(variables, response, reformulate),
-         model = map(formula, felm, data = data, cmethod ='reghdfe'),
-         coefficients = map(model, tidy),
-         summary = map(model, glance)) 
+if (save_memory == TRUE) {
+  rm(coincidences_distance_models)
+}
 
-models %>% unnest(coefficients) %>% dplyr::select(response, formula, term, estimate, std.error, statistic, p.value) %>%
-  pivot_longer(cols = c(estimate, std.error, statistic, p.value), names_to = "type") 
+#### Nominations ~ Distance Models
+# Clustering: network_id
+# Calculated factors: none
+# Absorbed factors (fixed effects): idego + idalter + factor(i_sex)
 
-%>% 
-  pivot_wider(id_cols = c(formula, term, type), values_from = value)
+nominations_distance_formula <- list(
+  paste0(distance_names, " | idego + idalter + factor(i_sex) | 0 | network_id"),
+  "ingroup | idego + idalter + factor(i_sex) | 0 | network_id"
+)
 
-pivot_wider(id_cols = c("term"))
+# Run regressions
+nominations_distance_models <-
+  regress_network(
+    expand_grid(characteristic = characteristics, time = characteristics_t) %>%
+      mutate(variable = paste(characteristic, time, sep = "_")),
+    nominations_distance_formula,
+    response = "variable",
+    use_data = merged_data,
+    control_baseline = TRUE,
+    cmethod = "reghdfe"
+  )
 
-communities_wide %<>% rename_all(~ str_replace_all(., pattern = "none_", "")) %>% 
-  rename_all(~ str_replace_all(., pattern = "betweenness", "btwn")) %>%
-  rename_all(~ str_replace_all(., pattern = "greedy", "grdy")) %>%
-  rename_all(~ str_replace_all(., pattern = "leading", "lding")) %>%
-  rename_all(~ str_replace_all(., pattern = "eigen", "eign")) %>%
-  rename_all(~ str_replace_all(., pattern = "label", "lbl")) %>%
-  rename_all(~ str_replace_all(., pattern = "infomap", "infmp")) %>%
-  rename_all(~ str_replace_all(., pattern = "louvain", "lvain")) %>%
-  rename_all(~ str_replace_all(., pattern = "walktrap", "wktrp")) %>%
-  rename_all(~ str_replace_all(., pattern = "same_", "s_")) %>%
-  rename_all(~ str_replace_all(., pattern = "friend", "frd")) %>%
-  rename_all(~ str_replace_all(., pattern = "study", "stdy")) %>%
-  rename_all(~ str_replace_all(., pattern = "social", "soc")) %>%
-  dplyr::select(coar, cohort, idego, idalter, matches("^s_"), contains("contiguo")) %>%
-  mutate(network = paste(coar, cohort, sep="_")) %>% 
-  ungroup() %>%
-  dplyr::select(-c(coar, cohort)) %>%
-  mutate_all(replace_na, replace = ".") %>%
-  mutate(idego = factor(idego, levels = unique(idego)),
-         idalter = factor(idalter, levels = unique(idalter)), 
-         network_id = as.numeric(factor(network, levels = unique(network))))
+# Save models object on file
+save(nominations_distance_models, file = paste0("nominations_distance_models_", Sys.Date(), ".RData"))
 
-test <- communities_wide %>% dplyr::select(coar, cohort, idego, idalter, matches("(any_mut$)|(any_coll$)"), contains("contiguo")) %>%
-  filter(idego != idalter) %>%
-  mutate(network = paste(coar, cohort, sep="_")) %>% dplyr::select(-c(coar, cohort)) %>%
-  drop_na() %>% mutate(idego = factor(idego, levels = unique(idego)),
-                       idalter = factor(idalter, levels = unique(idalter)), 
-                       network = as.numeric(factor(network, levels = unique(network))))
+# Print models
+nominations_distance_models %>%
+  group_by(characteristic) %>%
+  group_split() %>%
+  walk(sink_latex_output, filename = "nominations_distance_regressions.txt")
 
-test %>% mutate(contiguo = reduce(dplyr::select(., starts_with("contiguo")), `+`)) %>% dplyr::select(contiguo) %>% View
+if (save_memory == TRUE) {
+  rm(nominations_distance_models)
+}
 
-lfe.index <- felm(same_edge_betweenness_any_coll ~ contiguo1 + contiguo2 + contiguo3 + contiguo4 + contiguo5 + contiguo6 + contiguo7 + contiguo8 + contiguo9 | index | (0) | network,
-                  data=test) 
-
-est <- felm(same_edge_betweenness_any_coll ~ contiguo1 + contiguo2 | index | 0 | network, data = test)
-
-plm.index <- plm(formula= same_edge_betweenness_any_coll ~ factor(contiguo1) + factor(contiguo2) + factor(contiguo3) + factor(contiguo4) + factor(contiguo5) + factor(contiguo6) + factor(contiguo7) + factor(contiguo8) + factor(contiguo9),
-                 data=test, model="within", index=c("index"), effect = "individual") 
-
-lm.index <- lm(formula= same_edge_betweenness_any_mut ~ factor(contiguo1) + factor(contiguo2) + factor(contiguo3) + factor(contiguo4) + factor(contiguo5) + factor(contiguo6) + factor(contiguo7) + factor(contiguo8) + factor(contiguo9), data=test)
-
-write_csv(test, path = paste0("test_regressions_", Sys.Date(), ".csv"))
-write_csv(communities_wide, path = paste0("regressions_data_", Sys.Date(), ".csv"))
+## Exit
+setwd("..")

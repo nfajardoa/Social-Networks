@@ -2,12 +2,11 @@
 
 # Package names
 
-packages <- c("furrr", "tictoc", "tidyverse", "magrittr", "tidygraph", "ggraph", "igraph", 
+packages <- c("furrr", "tictoc", "tidyverse", "magrittr", "tidygraph", "ggraph", "igraph", "reproducible",
               "reshape2", "Rglpk", "grid", "gridExtra", "ggplot2", "extrafont", "qualpalr", "ggthemes",
-              "broom", "estimatr", "lfe", "stargazer", "foreign", "quantreg", "gbm", "glmnet",
-              "MASS", "rpart", "doParallel", "sandwich", "randomForest",
-              "nnet", "matrixStats", "xtable", "readstata13", "car", "lfe", "doParallel",
-              "caret", "foreach", "multcomp","cowplot", "neuralnet", "dbplyr", "RPostgreSQL", "RPostgres", "pryr") 
+              "broom", "estimatr", "lfe", "stargazer", "foreign", "quantreg", "dbplyr", "RPostgreSQL", "future.apply",
+              "RPostgres", "pryr", "skimr", "multcomp", "caret", "modelr", "tidymodels", "ranger", "glmnet", "ggstance",
+              "dplyr", "parsnip", "recipes", "tune", "yardstick", "fastDummies", "gt", "future", "furrr", "scales", "ggalt")
 
 # Install packages not yet installed
 installed_packages <- packages %in% rownames(installed.packages())
@@ -19,5 +18,4 @@ if (any(installed_packages == FALSE)) {
 invisible(lapply(packages, library, character.only = TRUE))
 
 # Options
-options(future.globals.maxSize = 891289600)
-
+options(future.globals.maxSize = 1.5*1024^3, future.debug = FALSE)
